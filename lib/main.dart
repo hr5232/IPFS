@@ -5,10 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:encrypt/encrypt.dart' as encrypt;
+import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 void main() {
   runApp(const MyApp());
@@ -32,46 +31,33 @@ class MyApp extends StatelessWidget {
 }
 
 class FileUploaderScreen extends StatefulWidget {
-  const FileUploaderScreen({Key? key}) : super(key: key);
+  const FileUploaderScreen({super.key});
 
   @override
   State<FileUploaderScreen> createState() => _FileUploaderScreenState();
 }
 
 class _FileUploaderScreenState extends State<FileUploaderScreen> {
-  // Upload Section
   String? _filePath;
   String _statusMessage = "Select a file to upload.";
   String? _encryptionKey;
   String? _cid;
 
-  // Retrieval Section
   final TextEditingController _cidController = TextEditingController();
   final TextEditingController _keyController = TextEditingController();
   String _retrievalStatus = "Enter CID and Decryption Key to retrieve file.";
 
-  // Notification setup
-  FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
-      FlutterLocalNotificationsPlugin();
-
-  @override
-  void initState() {
-    super.initState();
-    var initializationSettings = InitializationSettings(
-      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
-    );
-    flutterLocalNotificationsPlugin.initialize(initializationSettings);
+  Future<void> _requestStoragePermission() async {
+    if (!await Permission.storage.isGranted) {
+      await Permission.storage.request();
+    }
   }
 
-  // Copy to Clipboard
-  void _copyToClipboard(String text, String label) {
-    Clipboard.setData(ClipboardData(text: text));
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('$label copied to clipboard!')),
-    );
+  Future<String> _getDownloadDirectory() async {
+    final directory = await getExternalStorageDirectory();
+    return '${directory!.path}/Download';
   }
 
-  // Select File for Upload
   Future<void> _selectFile() async {
     try {
       final result = await FilePicker.platform.pickFiles();
@@ -92,43 +78,39 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
     }
   }
 
-  // Encrypt File
-  Future<Map<String, String>> _encryptFile(Uint8List fileData) async {
-    try {
-      final key = encrypt.Key.fromSecureRandom(32); // 256-bit encryption key
-      final encrypter =
-          encrypt.Encrypter(encrypt.AES(key, mode: encrypt.AESMode.ecb));
+  Future<Map<String, dynamic>> _encryptFile(Uint8List fileData) async {
+    final key = encrypt.Key.fromSecureRandom(32); // 256-bit key
+    final encrypter =
+        encrypt.Encrypter(encrypt.AES(key, mode: encrypt.AESMode.cbc));
+    final iv = encrypt.IV.fromSecureRandom(16);
 
-      final encrypted = encrypter.encryptBytes(fileData);
-      setState(() {
-        _encryptionKey = base64Encode(key.bytes);
-      });
+    final encrypted = encrypter.encryptBytes(fileData, iv: iv);
 
-      return {
-        'encryptedData': base64Encode(encrypted.bytes),
-        'encryptionKey': base64Encode(key.bytes),
-      };
-    } catch (e) {
-      throw Exception("Error encrypting file: $e");
-    }
+    setState(() {
+      _encryptionKey = base64Encode(key.bytes + iv.bytes);
+    });
+
+    return {
+      'encryptedData': Uint8List.fromList(encrypted.bytes),
+      'encryptionKey': key.bytes,
+      'iv': iv.bytes,
+    };
   }
 
-  // Upload to Pinata
-  Future<void> _uploadToPinata(String encryptedData, String fileName) async {
+  Future<void> _uploadToPinata(Uint8List encryptedData, String fileName) async {
     const String apiKey = 'f7b770e84098104f4947';
     const String apiSecret =
         '6ee68dc0a40a9b9094c96f1b354e2ea2844c764e6cb3173dc0df6cb00e6453f1';
     const String url = 'https://api.pinata.cloud/pinning/pinFileToIPFS';
 
     try {
-      final bytes = Uint8List.fromList(utf8.encode(encryptedData));
-      final blob =
-          http.MultipartFile.fromBytes('file', bytes, filename: fileName);
-
       final request = http.MultipartRequest('POST', Uri.parse(url))
         ..headers['pinata_api_key'] = apiKey
         ..headers['pinata_secret_api_key'] = apiSecret
-        ..files.add(blob);
+        ..files.add(
+          http.MultipartFile.fromBytes('file', encryptedData,
+              filename: fileName),
+        );
 
       final response = await request.send();
 
@@ -137,10 +119,12 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
         final responseJson = jsonDecode(responseBody);
         setState(() {
           _cid = responseJson['IpfsHash'];
-          _statusMessage = "File uploaded successfully to Pinata!";
+          _statusMessage = "File uploaded successfully!";
         });
       } else {
-        throw Exception("Failed to upload file: ${response.statusCode}");
+        setState(() {
+          _statusMessage = "Failed to upload file: ${response.statusCode}";
+        });
       }
     } catch (e) {
       setState(() {
@@ -149,16 +133,17 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
     }
   }
 
-  // Handle File Upload
   Future<void> _handleFileUpload() async {
-    if (_filePath == null) {
-      setState(() {
-        _statusMessage = "Please select a file first.";
-      });
-      return;
-    }
-
     try {
+      await _requestStoragePermission();
+
+      if (_filePath == null) {
+        setState(() {
+          _statusMessage = "Please select a file first.";
+        });
+        return;
+      }
+
       setState(() {
         _statusMessage = "Encrypting file...";
       });
@@ -171,7 +156,9 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
       });
 
       await _uploadToPinata(
-          encryptionResult['encryptedData']!, _filePath!.split('/').last);
+        encryptionResult['encryptedData']!,
+        _filePath!.split('/').last,
+      );
     } catch (e) {
       setState(() {
         _statusMessage = "Error: $e";
@@ -179,7 +166,6 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
     }
   }
 
-  // Retrieve File from Pinata
   Future<void> _retrieveFile() async {
     final cid = _cidController.text.trim();
     final keyString = _keyController.text.trim();
@@ -192,52 +178,39 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
     }
 
     try {
+      await _requestStoragePermission();
       setState(() {
         _retrievalStatus = "Fetching file from Pinata...";
       });
 
-      // Fetch encrypted data from Pinata
       final url = 'https://gateway.pinata.cloud/ipfs/$cid';
       final response = await http.get(Uri.parse(url));
 
       if (response.statusCode == 200) {
-        // Decode the encrypted data
-        final encryptedBytes = base64Decode(response.body);
+        final encryptedBytes = response.bodyBytes;
 
-        // Decode the encryption key
-        final key = encrypt.Key(base64Decode(keyString));
-
-        // Initialize the encrypter
+        final decodedKey = base64Decode(keyString);
+        final key = encrypt.Key(decodedKey.sublist(0, 32));
+        final iv = encrypt.IV(decodedKey.sublist(32, 48));
         final encrypter =
-            encrypt.Encrypter(encrypt.AES(key, mode: encrypt.AESMode.ecb));
-
-        // Decrypt the data
+            encrypt.Encrypter(encrypt.AES(key, mode: encrypt.AESMode.cbc));
         final decryptedBytes =
-            encrypter.decryptBytes(encrypt.Encrypted(encryptedBytes));
+            encrypter.decryptBytes(encrypt.Encrypted(encryptedBytes), iv: iv);
 
-        // Ensure the directory exists
-        final directory = await getExternalStorageDirectory();
-        final downloadDirectory = Directory('${directory!.path}/Download');
-        if (!await downloadDirectory.exists()) {
-          await downloadDirectory.create(recursive: true);
-        }
+        final downloadPath = await _getDownloadDirectory();
+        final filePath = '$downloadPath/retrieved_file';
 
-        // Save the file locally in the Download folder
-        final filePath = '${downloadDirectory.path}/retrieved_file';
         final file = File(filePath);
-
+        await file.create(recursive: true);
         await file.writeAsBytes(decryptedBytes);
 
         setState(() {
-          _retrievalStatus =
-              "File retrieved successfully! Saved at: ${file.path}";
+          _retrievalStatus = "File retrieved successfully! Saved to Downloads.";
         });
-
-        // Show notification for file download
-        _showDownloadNotification(file.path);
       } else {
-        throw Exception(
-            "Failed to fetch file from Pinata. HTTP Status: ${response.statusCode}");
+        setState(() {
+          _retrievalStatus = "Failed to fetch file: ${response.statusCode}";
+        });
       }
     } catch (e) {
       setState(() {
@@ -246,34 +219,11 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
     }
   }
 
-  // Show notification after file is saved
-  Future<void> _showDownloadNotification(String filePath) async {
-    var androidDetails = AndroidNotificationDetails(
-      'download_channel',
-      'Download Notifications',
-      channelDescription: 'Notifications for downloaded files',
-      importance: Importance.max,
-      priority: Priority.high,
-      ticker: 'ticker',
+  Future<void> _copyToClipboard(String text) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('$text copied to clipboard!')),
     );
-    var notificationDetails = NotificationDetails(android: androidDetails);
-
-    await flutterLocalNotificationsPlugin.show(
-      0,
-      'File Downloaded',
-      'File has been saved to your device: $filePath',
-      notificationDetails,
-      payload: filePath,
-    );
-  }
-
-  // Open file when notification is tapped
-  Future<void> _onNotificationTapped(String filePath) async {
-    if (await canLaunch(filePath)) {
-      await launch(filePath);
-    } else {
-      throw 'Could not open file: $filePath';
-    }
   }
 
   @override
@@ -314,38 +264,31 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
                     child: Text(_statusMessage),
                   ),
                   if (_cid != null)
-                    Column(
-                      children: [
-                        GestureDetector(
-                          onTap: () => _copyToClipboard(_cid!, "CID"),
-                          child: Text(
-                            "CID: $_cid",
-                            style: TextStyle(
-                              color: Colors.blue,
-                              decoration: TextDecoration.underline,
-                            ),
-                          ),
+                    GestureDetector(
+                      onTap: () => _copyToClipboard(_cid!),
+                      child: Text(
+                        "CID: $_cid",
+                        style: const TextStyle(
+                          color: Colors.blue,
+                          decoration: TextDecoration.underline,
                         ),
-                        if (_encryptionKey != null)
-                          GestureDetector(
-                            onTap: () => _copyToClipboard(
-                                _encryptionKey!, "Encryption Key"),
-                            child: Text(
-                              "Encryption Key: $_encryptionKey",
-                              style: TextStyle(
-                                color: Colors.green,
-                                decoration: TextDecoration.underline,
-                              ),
-                            ),
-                          ),
-                      ],
+                      ),
+                    ),
+                  if (_encryptionKey != null)
+                    GestureDetector(
+                      onTap: () => _copyToClipboard(_encryptionKey!),
+                      child: Text(
+                        "Encryption Key: $_encryptionKey",
+                        style: const TextStyle(
+                          color: Colors.green,
+                          decoration: TextDecoration.underline,
+                        ),
+                      ),
                     ),
                 ],
               ),
             ),
-
             const SizedBox(height: 16.0),
-
             // Retrieval Section
             Container(
               padding: const EdgeInsets.all(16.0),
@@ -360,14 +303,23 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
                     style:
                         TextStyle(fontSize: 20.0, fontWeight: FontWeight.bold),
                   ),
-                  TextField(
-                    controller: _cidController,
-                    decoration: const InputDecoration(labelText: "CID"),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8.0),
+                    child: TextField(
+                      controller: _cidController,
+                      decoration: const InputDecoration(
+                        labelText: "Enter CID",
+                      ),
+                    ),
                   ),
-                  TextField(
-                    controller: _keyController,
-                    decoration:
-                        const InputDecoration(labelText: "Decryption Key"),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8.0),
+                    child: TextField(
+                      controller: _keyController,
+                      decoration: const InputDecoration(
+                        labelText: "Enter Decryption Key",
+                      ),
+                    ),
                   ),
                   ElevatedButton(
                     onPressed: _retrieveFile,
