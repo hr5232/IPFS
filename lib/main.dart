@@ -48,14 +48,18 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
   String _retrievalStatus = "Enter CID and Decryption Key to retrieve file.";
 
   Future<void> _requestStoragePermission() async {
-    if (!await Permission.storage.isGranted) {
-      await Permission.storage.request();
+    if (!await Permission.manageExternalStorage.isGranted) {
+      await Permission.manageExternalStorage.request();
     }
   }
 
   Future<String> _getDownloadDirectory() async {
-    final directory = await getExternalStorageDirectory();
-    return '${directory!.path}/Download';
+    final directory = Directory('/storage/emulated/0/Download');
+    if (await directory.exists()) {
+      return directory.path;
+    } else {
+      throw Exception("Downloads directory not found!");
+    }
   }
 
   Future<void> _selectFile() async {
@@ -198,14 +202,16 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
             encrypter.decryptBytes(encrypt.Encrypted(encryptedBytes), iv: iv);
 
         final downloadPath = await _getDownloadDirectory();
-        final filePath = '$downloadPath/retrieved_file';
+        final filePath =
+            '$downloadPath/retrieved_file'; // Change the extension if needed
 
         final file = File(filePath);
         await file.create(recursive: true);
         await file.writeAsBytes(decryptedBytes);
 
         setState(() {
-          _retrievalStatus = "File retrieved successfully! Saved to Downloads.";
+          _retrievalStatus =
+              "File retrieved successfully! Check the Downloads folder in your file manager.";
         });
       } else {
         setState(() {
