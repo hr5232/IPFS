@@ -42,6 +42,7 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
   String _statusMessage = "Select a file to upload.";
   String? _encryptionKey;
   String? _cid;
+  String? _originalFileName;
 
   final TextEditingController _cidController = TextEditingController();
   final TextEditingController _keyController = TextEditingController();
@@ -68,6 +69,7 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
       if (result != null && result.files.single.path != null) {
         setState(() {
           _filePath = result.files.single.path;
+          _originalFileName = result.files.single.name;
           _statusMessage = "File selected: ${result.files.single.name}";
         });
       } else {
@@ -161,7 +163,7 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
 
       await _uploadToPinata(
         encryptionResult['encryptedData']!,
-        _filePath!.split('/').last,
+        _originalFileName!,
       );
     } catch (e) {
       setState(() {
@@ -182,7 +184,6 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
     }
 
     try {
-      await _requestStoragePermission();
       setState(() {
         _retrievalStatus = "Fetching file from Pinata...";
       });
@@ -202,8 +203,7 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
             encrypter.decryptBytes(encrypt.Encrypted(encryptedBytes), iv: iv);
 
         final downloadPath = await _getDownloadDirectory();
-        final filePath =
-            '$downloadPath/retrieved_file'; // Change the extension if needed
+        final filePath = '$downloadPath/$_originalFileName';
 
         final file = File(filePath);
         await file.create(recursive: true);
@@ -211,7 +211,7 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
 
         setState(() {
           _retrievalStatus =
-              "File retrieved successfully! Check the Downloads folder in your file manager.";
+              "File retrieved successfully! Saved as $_originalFileName in Downloads.";
         });
       } else {
         setState(() {
