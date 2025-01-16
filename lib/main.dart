@@ -113,6 +113,12 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
       final request = http.MultipartRequest('POST', Uri.parse(url))
         ..headers['pinata_api_key'] = apiKey
         ..headers['pinata_secret_api_key'] = apiSecret
+        ..fields['pinataMetadata'] = jsonEncode({
+          'name': fileName,
+          'keyvalues': {
+            'originalFileName': fileName,
+          },
+        })
         ..files.add(
           http.MultipartFile.fromBytes('file', encryptedData,
               filename: fileName),
@@ -172,6 +178,33 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
     }
   }
 
+  Future<String> _getFileNameFromMetadata(String cid) async {
+    const String url = 'https://api.pinata.cloud/data/pinList?hashContains=';
+    const String apiKey = 'f7b770e84098104f4947';
+    const String apiSecret =
+        '6ee68dc0a40a9b9094c96f1b354e2ea2844c764e6cb3173dc0df6cb00e6453f1';
+
+    try {
+      final response = await http.get(
+        Uri.parse('$url$cid'),
+        headers: {
+          'pinata_api_key': apiKey,
+          'pinata_secret_api_key': apiSecret,
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final responseBody = jsonDecode(response.body);
+        final metadata = responseBody['rows'][0]['metadata'];
+        return metadata['keyvalues']['originalFileName'];
+      } else {
+        throw Exception("Failed to fetch metadata: ${response.statusCode}");
+      }
+    } catch (e) {
+      throw Exception("Error fetching metadata: $e");
+    }
+  }
+
   Future<void> _retrieveFile() async {
     final cid = _cidController.text.trim();
     final keyString = _keyController.text.trim();
@@ -184,6 +217,13 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
     }
 
     try {
+      setState(() {
+        _retrievalStatus = "Fetching file metadata...";
+      });
+
+      // Fetch the original file name from metadata
+      final originalFileName = await _getFileNameFromMetadata(cid);
+
       setState(() {
         _retrievalStatus = "Fetching file from Pinata...";
       });
@@ -203,7 +243,7 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
             encrypter.decryptBytes(encrypt.Encrypted(encryptedBytes), iv: iv);
 
         final downloadPath = await _getDownloadDirectory();
-        final filePath = '$downloadPath/$_originalFileName';
+        final filePath = '$downloadPath/$originalFileName';
 
         final file = File(filePath);
         await file.create(recursive: true);
@@ -211,7 +251,7 @@ class _FileUploaderScreenState extends State<FileUploaderScreen> {
 
         setState(() {
           _retrievalStatus =
-              "File retrieved successfully! Saved as $_originalFileName in Downloads.";
+              "File retrieved successfully! Saved as $originalFileName in Downloads.";
         });
       } else {
         setState(() {
